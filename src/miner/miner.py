@@ -6,23 +6,19 @@ from keylimiter import TokenBucketLimiter
 import os
 import json
 import hashlib
+import pandas as pd
 from uniswap_fetcher_rs import UniswapFetcher
 from typing import List
 
 from utils.helpers import unsigned_hex_to_int, signed_hex_to_int
-from utils.protocols import (
-    HealthCheckSynapse, HealthCheckResponse,
-    PoolEventSynapse, PoolEventResponse,
-    PoolMetricSynapse, PoolMetricResponse,
-    PredictionSynapse, PredictionSynapse,
-    CurrentPoolMetricSynapse, CurrentPoolMetricResponse,
-    CurrentPoolMetric, RecentPoolEventSynapse,
-    RecentPoolEventResponse, PoolEvent,
-    CurrentTokenMetricSynapse, CurrentTokenMetricResponse,
-    CurrentTokenMetric, PoolMetricAPI, TokenPairData,
-    PoolMetricAPISynapse, PoolMetricAPIResponse
-    )
-from db.db_manager import DBManager
+from utils.protocols import *
+from utils.log import log
+from utils.bfs import breadthFirstSearch
+from src.miner.predict_lstm_model import predict_token_price
+from db.miner_db import MinerDBManager
+
+START_TIMESTAMP = int(datetime(2021, 5, 4).timestamp())
+DAY = 60 * 60 * 24
 
 class Miner(Module):
     """
@@ -38,7 +34,22 @@ class Miner(Module):
         super().__init__()
         
         self.uniswap_fetcher_rs = UniswapFetcher(os.getenv('ETHEREUM_RPC_NODE_URL'))
-        self.db_manager = DBManager()
+        self.db_manager = MinerDBManager()
+        
+        self.last_synced_time = self.db_manager.lastSyncedTimestamp()
+        if self.last_synced_time is None:
+            self.last_synced_time = START_TIMESTAMP
+        self.sync_token_pairs()
+    
+    def sync_token_pairs(self) -> None:
+        log('Syncing token pairs...')
+        
+        now = int(datetime.now().timestamp())
+        token_pairs = self.uniswap_fetcher_rs.get_pool_created_events_between_two_timestamps(self.last_synced_time, now)
+        self.db_manager.add_token_pairs(token_pairs, now)
+        self.last_synced_time = now
+        
+        log(f'Sync finished until {now}')
 
     @endpoint
     def forwardHealthCheckSynapse(self, synapse: dict):
@@ -73,7 +84,17 @@ class Miner(Module):
     
     @endpoint
     def forwardPredictionSynapse(self, synapse: PredictionSynapse):
-        pass
+        self.sync_token_pairs()
+        token_pairs = breadthFirstSearch(self, synapse.token_address)
+        price_in_usd = [1] * (12 * 24)
+        for token_pair in token_pairs:
+            pool_address = self.db_manager.search_pool_address(token_pair[0], token_pair[1])
+            data = self.uniswap_fetcher_rs.get_recent_token_ratio(pool_address, synapse.timestamp - DAY, synapse.timestamp)
+            price_in_usd = [price_in_usd[i] * data[i] for i in range(len(data))]
+        
+        price_history = pd.DataFrame(price_in_usd, columns=['close_price'])
+        price = predict_token_price(price_history)
+        return PredictionResponse(price=price).json()
     
     @endpoint
     def forwardCurrentPoolMetricSynapse(self, synapse: CurrentPoolMetricSynapse):

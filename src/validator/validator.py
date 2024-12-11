@@ -35,11 +35,7 @@ from substrateinterface import Keypair  # type: ignore
 
 from ._config import ValidatorSettings
 from utils.log import log
-from utils.protocols import (HealthCheckSynapse, HealthCheckResponse,
-                             PoolEventSynapse, PoolEventResponse,
-                             PoolMetricSynapse, PoolMetricResponse,
-                             PredictionSynapse, PredictionResponse,
-                             class_dict)
+from utils.protocols import *
 from uniswap_fetcher_rs import UniswapFetcher
 
 from communex._common import ComxSettings  # type: ignore
@@ -58,6 +54,8 @@ import random
 import os
 from dotenv import load_dotenv
 import wandb
+
+from db.validator_db import ValidatorDBManager
 
 load_dotenv()
 
@@ -232,11 +230,17 @@ class VeloraValidator(Module):
         self.client = client
         self.key = key
         self.netuid = netuid
-        self.val_model = "foo"
         self.call_timeout = call_timeout
         
         self.uniswap_fetcher_rs = UniswapFetcher(os.getenv('ETHEREUM_RPC_NODE_URL'))
         self.wandb_running = False
+        self.db_manager = ValidatorDBManager()
+
+        self.last_synced_time = self.db_manager.lastSyncedTimeStamp()
+        if self.last_synced_time is None:
+            self.last_synced_time = START_TIMESTAMP
+        self.sync_tokens()
+        
         if wandb_on:
             self.init_wandb()
         
@@ -702,6 +706,16 @@ class VeloraValidator(Module):
         score_dict = {direction_score[key] * 0.5 + miner_deviation[key] * 0.5 for key in direction_score.keys()}
         return score_dict
     
+    def sync_tokens(self):
+        log('Syncing tokens...')
+        
+        now = int(datetime.now().timestamp())
+        tokens = self.uniswap_fetcher_rs.get_all_tokens(self.last_synced_time, now)
+        self.db_manager.add_tokens(tokens, now)
+        self.last_synced_time = now
+        
+        log(f'Synced tokens until {self.last_synced_time}')
+    
     def manage_prediction_synapse(self, miner_infos: dict, settings: ValidatorSettings):
         """
         Manages the timeline of prediction synapses.
@@ -711,7 +725,8 @@ class VeloraValidator(Module):
         minutes = time_in_slot / 60
         
         if minutes < 26:
-            return
+            if self.last_synced_time < now - time_in_slot:
+                self.sync_tokens()
         elif minutes < 27:
             print('Checking miner responses and Setting weights')
             if not hasattr(self, 'prediction_results') or self.prediction_results is None:
@@ -731,8 +746,9 @@ class VeloraValidator(Module):
         elif minutes < 29:
             print('Send prediction synapses and receive responses')
             next_timestamp_to_predict = now - time_in_slot + PREDICTION_SYNAPSE_INTERVAL
+            tokens = self.db_manager.getAvailableTokens()
             
-            synapse = PredictionSynapse(timestamp = next_timestamp_to_predict)
+            synapse = PredictionSynapse(timestamp = next_timestamp_to_predict, token_address = random.choice(tokens))
             miner_results = self.get_miner_answer(miner_infos, synapse)
             self.prediction_results = list(zip(miner_infos.keys(), miner_results))
         

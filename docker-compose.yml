@@ -1,15 +1,15 @@
 services:
-  timescaledb:
+  validator_timescaledb:
     image: timescale/timescaledb:latest-pg16  # Use the latest stable version with PostgreSQL 16
-    container_name: timescaledb_container
+    container_name: validator_timescaledb_container
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}       # Replace with your desired username
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # Replace with your desired password
-      POSTGRES_DB: ${POSTGRES_DB}         # Replace with your desired database name
+      POSTGRES_USER: ${POSTGRES_VALIDATOR_USER}       # Replace with your desired username
+      POSTGRES_PASSWORD: ${POSTGRES_VALIDATOR_PASSWORD}   # Replace with your desired password
+      POSTGRES_DB: ${POSTGRES_VALIDATOR_DB}         # Replace with your desired database name
     ports:
-      - "${POSTGRES_PORT}:5432"                      # Expose PostgreSQL port to localhost
+      - "${POSTGRES_VALIDATOR_PORT}:5432"                      # Expose PostgreSQL port to localhost
     volumes:
-      - timescaledb_data:/var/lib/postgresql/data  # Persist data locally
+      - validator_timescaledb_data:/var/lib/postgresql/validator/data  # Persist data locally
     networks:
       - postgres_network
 
@@ -98,4 +98,5 @@ networks:
         - subnet: 99.97.0.0/16
 
 volumes:
+  postgres_data:
   timescaledb_data:

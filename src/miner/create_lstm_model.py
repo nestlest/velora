@@ -13,11 +13,11 @@ from sklearn.metrics import mean_squared_error
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 
-from db.db_manager import DBManager
+from db.miner_db import MinerDBManager
 
 PREDICTION_COUNT = 6
 
-db_manager = DBManager()
+db_manager = MinerDBManager()
 
 def load_datasets_from_db():
     pool_address = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'

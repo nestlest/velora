@@ -6,7 +6,7 @@ pydantic-settings==2.6.1
 rustimport==1.5.1
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
-uniswap_fetcher_rs==0.1.4
+uniswap_fetcher_rs==0.1.7
 wandb==0.18.7
 scikit-learn
 pandas

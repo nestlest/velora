@@ -2,7 +2,8 @@ from sqlalchemy import create_engine, Column, Date, Boolean, MetaData, Table, St
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, aliased
 from typing import Union, List, Dict
-from utils.config import get_postgres_url
+from utils.config import get_postgres_miner_url
+from utils.utils import has_stablecoin
 
 from datetime import datetime
 
@@ -26,10 +27,13 @@ class TokenPairTable(BaseTable):
     id = Column(Integer, primary_key=True, autoincrement=True)
     token0 = Column(String, nullable=False)
     token1 = Column(String, nullable=False)
+    has_stablecoin = Column(Boolean, nullable=False)
+    indexed = Column(Boolean, nullable=False)
     fee = Column(Integer, nullable=False)
     pool = Column(String, nullable=False)
-    block_number = Column(String, nullable=False)
+    block_number = Column(Integer, nullable=False)
     completed = Column(Boolean, nullable=False)
+    last_synced_time = Column(Integer, nullable=True)
 
 class SwapEventTable(BaseTable):
     __tablename__ = 'swap_event'
@@ -123,9 +127,9 @@ class TokenTable(Base):
     name = Column(String, nullable=False)
     decimals = Column(Integer, nullable=False)
 
-class DBManager:
+class MinerDBManager:
 
-    def __init__(self, url = get_postgres_url()) -> None:
+    def __init__(self, url = get_postgres_miner_url()) -> None:
         # Create the SQLAlchemy engine
         self.engine = create_engine(url)
 
@@ -183,19 +187,93 @@ class DBManager:
                 session.commit()
                 return True
             return False
+        
+    def add_tokens(self, tokens: List[Dict[str, Union[str, Integer]]]) -> None:
+        """Add tokens to the corresponding table."""
+        with self.Session() as session:
+            for token in tokens:
+                exists = (
+                    session.query(TokenTable)
+                    .filter_by(address=token["address"])
+                    .first()
+                )
+                if not exists:
+                    new_token = TokenTable(
+                        address=token["address"],
+                        symbol=token["symbol"],
+                        name=token["name"],
+                        decimals=token["decimals"],
+                    )
+                    session.add(new_token)
+            session.commit()
 
-    def add_token_pairs(self, token_pairs: List[Dict[str, Union[str, int]]]) -> None:
+    def add_token_pairs(
+        self, token_pairs: List[Dict[str, Union[str, Integer]]], timestamp: int
+    ) -> None:
         """Add token pairs to the corresponding table."""
-        
+        with self.Session() as session:
+            try:
+                last_token_pair = session.query(TokenPairTable).order_by(TokenPairTable.block_number.desc()).first()
+                last_block_number = last_token_pair.block_number
+                last_pool_address = last_token_pair.pool
+            except:
+                last_block_number = 0
         insert_values = [
-            TokenPairTable(token0 = token_pair['token0'], token1 = token_pair['token1'], fee = token_pair['fee'], pool = token_pair['pool'], block_number = token_pair['block_number'], completed = False)
+            TokenPairTable(
+                token0=token_pair["token0"]["address"],
+                token1=token_pair["token1"]["address"],
+                has_stablecoin=has_stablecoin(token_pair),
+                indexed=False,
+                fee=token_pair["fee"],
+                pool=token_pair["pool_address"],
+                block_number=token_pair["block_number"],
+                completed=False,
+                last_synced_time=timestamp
+            )
             for token_pair in token_pairs
+            if token_pair['block_number'] > last_block_number or (token_pair['block_number'] == last_block_number and token_pair['pool_address'] != last_pool_address)
         ]
-        
+        self.add_tokens(
+            [
+                token
+                for token_pair in token_pairs
+                for token in [token_pair["token0"], token_pair["token1"]]
+            ]
+        )
+
         with self.Session() as session:
             session.add_all(insert_values)
             session.commit()
     
+    def fetch_related_tokens(self, token: str):
+        with self.Session() as session:
+            res = session.query(TokenPairTable).filter_by(token0=token).all()
+            if res is not None:
+                for token_pair in res:
+                    yield token_pair.token1
+                    
+            res = session.query(TokenPairTable).filter_by(token1=token).all()
+            if res is not None:
+                for token_pair in res:
+                    yield token_pair.token0
+    
+    def search_pool_address(self, token0: str, token1: str):
+        with self.Session() as session:
+            res = session.query(TokenPairTable).filter_by(token0=token0, token1=token1).first()
+            if res is not None:
+                return res.pool
+            
+            res = session.query(TokenPairTable).filter_by(token0=token1, token1=token0).first()
+            if res is not None:
+                return res.pool
+        return None
+            
+    def lastSyncedTimestamp(self):
+        with self.Session() as session:
+            res = session.query(TokenPairTable).order_by(TokenPairTable.last_synced_time.desc()).first()
+            if res is not None:
+                return res.last_synced_time
+
     def fetch_token_pairs(self):
         """Fetch all token pairs from the corresponding table."""
         with self.Session() as session:
